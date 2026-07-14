@@ -18,7 +18,7 @@
 
 - **默认技术选型**：除非用户另有要求，使用 **stdio 传输 + 官方 SDK 稳定版**（Python 用 FastMCP，TypeScript 用 `@modelcontextprotocol/sdk`）。这是最省事、兼容性最好的路径。
 - **必须使用第 3 节标注的「稳定版」SDK API**。两个官方 SDK 的 main 分支目前是 v2 预发布版，API 与稳定版不同——不要凭记忆或 main 分支文档生成代码（常见错误见 3.3）。
-- **产出必须完整**：项目文件结构、全部源代码、依赖清单（`pyproject.toml`/`requirements.txt` 或 `package.json`+`tsconfig.json`）、宿主接入配置片段、测试命令。用户复制粘贴即可运行。
+- **产出必须完整**：项目文件结构、全部源代码、依赖清单（`pyproject.toml`/`requirements.txt` 或 `package.json`+`tsconfig.json`）、宿主接入配置片段、测试命令、README（含运行与接入步骤）。用户复制粘贴即可运行。
 - **生成后自检**：对照第 8 节验收清单逐项检查自己生成的代码，不合规处必须修正后再输出。
 
 ---
@@ -48,6 +48,8 @@ Server 可以暴露三类能力（可任选，最常用的是工具）：
 | **Prompts（提示词）** | 用户主动触发 | 预置的提示词模板（如斜杠命令） | `/code_review` |
 
 **一个只暴露 1~2 个工具的 Server 就是完全合法、完整的插件。** 从工具开始，需要时再加资源和提示词。
+
+> 除上述三类服务端能力外，协议还定义了若干交互特性：**elicitation**（服务端执行中向用户征询输入，分 form / url 两种模式；规范禁止用 form 模式收集密码、API 密钥、支付凭据——此类场景必须用 url 模式）、**sampling**（服务端反过来请求宿主调用模型）、**logging**（`notifications/message` 配合 `logging/setLevel`）与**进度通知**（`notifications/progress`）。各宿主支持程度不一，**生成插件时默认不要依赖它们**：需要「执行前确认」时，优先在工具描述中标注破坏性操作并依靠宿主的确认机制（见第 4 节第 6 条、第 6 节第 5 条）；确有需要再查规范对应章节与 SDK 文档（Python FastMCP 在函数签名中声明 `Context` 参数即可获得 `ctx.info()`、`ctx.report_progress()` 等方法）。
 
 ---
 
@@ -87,6 +89,7 @@ Server 可以暴露三类能力（可任选，最常用的是工具）：
 | 工具 | `tools/list` | 返回 `{tools: [...], nextCursor?}`，支持 `cursor` 分页 |
 | 工具 | `tools/call` | 参数 `{name, arguments}`，返回 CallToolResult（见 2.4） |
 | 资源 | `resources/list` / `resources/read` | read 参数 `{uri}`，返回 `{contents: [{uri, mimeType?, text 或 blob}]}` |
+| 资源 | `resources/templates/list` | 返回 `{resourceTemplates: [...]}`，每项含 `uriTemplate`（RFC 6570）、`name` 等；**带参数模板的资源在此列出，不在 `resources/list`** |
 | 提示词 | `prompts/list` / `prompts/get` | get 返回 `{description?, messages: [{role, content}]}` |
 | 通用 | `ping` | 双向心跳，返回空对象 |
 
@@ -99,6 +102,8 @@ stdio 模式下宿主把你的插件作为子进程启动，stdin/stdout 就是�
 - stdout 上**每行一条** JSON-RPC 消息，消息内不得含换行。
 - **绝对禁止向 stdout 输出任何非协议内容**——一句 `print()`（Python）或 `console.log()`（JS）、一条启动 banner、甚至依赖库打的日志，都会破坏 JSON-RPC 帧，宿主端表现为 `Unexpected token ... is not valid JSON`，连接直接失败。
 - **所有日志一律写 stderr**：Python 用 `logging` 或 `print(..., file=sys.stderr)`；TypeScript 用 `console.error()`。宿主会捕获 stderr 作为服务器日志（Claude Desktop 存到 `mcp-server-<名字>.log`）。
+
+> 本节铁律**仅适用于 stdio 传输**。Streamable HTTP 模式下 stdout 不是协议信道，可自由打日志——但宿主也不会捕获你的 stderr（HTTP 模式的日志排查见 7.3）。
 
 ### 2.4 工具定义与返回值
 
@@ -119,8 +124,8 @@ stdio 模式下宿主把你的插件作为子进程启动，stdin/stdout 就是�
 }
 ```
 
-- `name`：**1~128 个字符，只能用 `A-Z a-z 0-9 _ - .`**，不能有空格，Server 内唯一。推荐 `snake_case` 动宾结构（`query_orders`、`create_ticket`）。
-- `inputSchema`：必填，必须是合法的 JSON Schema 对象（默认方言 2020-12），**不能为 null**。无参数工具用 `{"type": "object", "additionalProperties": false}`。
+- `name`：官方命名指南——**1~128 个字符，仅用 `A-Z a-z 0-9 _ - .`**，无空格，Server 内唯一（规范中为 SHOULD 级建议，但部分宿主会硬性校验，本文档要求生成的插件一律遵守）。推荐 `snake_case` 动宾结构（`query_orders`、`create_ticket`）。
+- `inputSchema`：必填，必须是合法的 JSON Schema 对象（默认方言 2020-12），**不能为 null**。手写实现时，无参数工具推荐 `{"type": "object", "additionalProperties": false}`（`{"type": "object"}` 也合规）；使用官方 SDK 时由 SDK 自动生成（如 `{"type": "object", "properties": {}}`），无需也不要手动改写。
 - `description`：写清**做什么 + 什么时候该调用**。模型靠它决定是否调用工具，这是插件好不好用的第一决定因素。
 - 可选 `outputSchema`：声明后，返回值中的 `structuredContent` **必须**符合该 Schema，且应同时把同一 JSON 序列化进一个 text 内容块（向后兼容）。
 
@@ -152,7 +157,7 @@ stdio 模式下宿主把你的插件作为子进程启动，stdin/stdout 就是�
 |---|---|---|
 | 运行方式 | 宿主把插件作为本地子进程启动 | 插件是独立 HTTP 服务，可远程部署、多客户端共享 |
 | 适用场景 | 个人/团队本地插件、访问本机资源 | 对外提供服务、云端部署、需要集中鉴权 |
-| 关键要求 | 见 2.3 | 单一端点（如 `/mcp`）同时支持 POST（必须）和 GET（可选 SSE）；客户端会带 `MCP-Protocol-Version` 和（若启用会话）`MCP-Session-Id` 头；**必须校验 `Origin` 头**（防 DNS rebinding，非法 Origin 返回 403）；本机服务只绑定 `127.0.0.1`；生产环境应实现鉴权（规范采用 OAuth 2.1，MCP Server 作为资源服务器） |
+| 关键要求 | 见 2.3 | 单一端点（如 `/mcp`）同时支持 POST（必须）和 GET（可选 SSE）；客户端会带 `MCP-Protocol-Version` 和（若启用会话）`MCP-Session-Id` 头；**必须校验 `Origin` 头**（防 DNS rebinding，非法 Origin 返回 403）；本机服务只绑定 `127.0.0.1`；生产环境应实现鉴权（规范采用 OAuth 2.1，MCP Server 作为资源服务器；分层实现方案见第 6 节第 4 条） |
 
 > 旧版「HTTP+SSE 双端点」传输（2024-11-05 时代）已废弃，新插件不要实现它。stdio 插件不需要实现 OAuth——密钥通过环境变量传入即可。
 
@@ -168,12 +173,30 @@ stdio 模式下宿主把你的插件作为子进程启动，stdin/stdout 就是�
 pip install "mcp[cli]>=1.27,<2"        # 或 uv add "mcp[cli]>=1.27,<2"
 ```
 
+参考项目结构与依赖清单：
+
+```
+my-plugin/
+├── server.py
+├── requirements.txt   # 或 pyproject.toml
+└── README.md
+```
+
+```
+# requirements.txt —— 保留 [cli] extra，第 7 节的 mcp dev 测试命令依赖它
+mcp[cli]>=1.27,<2
+httpx>=0.27        # 仅当插件需要调用 HTTP/REST API 时
+# 再加你的业务依赖（数据库驱动等）
+```
+
 **完整 stdio 插件模板**（`server.py`，可直接运行）：
 
 ```python
 """示例 MCP 插件：把这里替换成你的业务逻辑。"""
 import sys
 import logging
+
+from pydantic import Field
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
@@ -185,12 +208,10 @@ mcp = FastMCP("my-plugin")  # Server 名称
 
 
 @mcp.tool()
-def query_order(order_id: str) -> str:
-    """查询订单状态。当用户询问某个订单的进度、物流或状态时调用。
-
-    Args:
-        order_id: 订单号，例如 A1024
-    """
+def query_order(
+    order_id: str = Field(description="订单号，例如 A1024"),
+) -> str:
+    """查询订单状态。当用户询问某个订单的进度、物流或状态时调用。"""
     if not order_id.startswith("A"):
         # 业务/入参错误 → 抛 ToolError，SDK 自动转成 isError=True 的返回
         raise ToolError(f"订单号格式不正确: {order_id}（应以 A 开头）")
@@ -205,6 +226,9 @@ def add(a: int, b: int) -> int:
 
 
 # 可选：资源（URI 模板参数自动映射为函数参数）
+# 注意：URI 含 {参数} 时注册的是「资源模板」，出现在 resources/templates/list
+# 而非 resources/list；固定 URI（如 "config://app"）才出现在 resources/list。
+# 在 Inspector 的 Resources 标签页需点 List Templates 才能看到模板。
 @mcp.resource("greeting://{name}")
 def get_greeting(name: str) -> str:
     """按名字生成问候语"""
@@ -224,15 +248,18 @@ if __name__ == "__main__":
 
 要点：
 
-- **类型注解 + docstring 就是 Schema**：FastMCP 用函数签名自动生成 `inputSchema`，docstring 成为工具 `description`（`Args:` 段落成为参数描述）。带默认值的参数为可选参数。
+- **类型注解 + docstring 就是 Schema**：FastMCP 用函数签名自动生成 `inputSchema`；docstring 整体成为工具 `description`——但**不会**被解析写入 `inputSchema` 中各参数的 `description`。要生成 Schema 级参数描述（第 4 节规则 2 的要求），用 pydantic `Field`：`order_id: str = Field(description="订单号，例如 A1024")` 或 `order_id: Annotated[str, Field(description="订单号，例如 A1024")]`（两种写法在 mcp 1.28.x 均实测生效）。带默认值的参数为可选参数。
+- **工具可以是 `async def`**：FastMCP 原生支持异步工具。调用外部 API、数据库等 I/O 操作时推荐 `async def` + `httpx.AsyncClient`（官方 quickstart 的标准写法），避免用同步 `requests` 阻塞事件循环；纯本地快速计算用普通 `def` 即可。
 - **结构化输出**：返回 Pydantic `BaseModel`、`TypedDict`、dataclass 或 `dict[str, T]` 时，SDK 自动生成 `outputSchema` 并填充 `structuredContent`（基础类型会包装成 `{"result": value}`）。
 - **错误**：优先 `raise ToolError("原因")`；未捕获异常也会被 SDK 转为 `isError: true`。
 - **改用 Streamable HTTP**（生产部署推荐无状态 + JSON 响应）只需改两处：
 
 ```python
-mcp = FastMCP("my-plugin", stateless_http=True, json_response=True)
+# 默认 host 是 127.0.0.1（仅本机可访问）；远程部署时绑定 0.0.0.0，本地开发保持默认
+mcp = FastMCP("my-plugin", stateless_http=True, json_response=True,
+              host="0.0.0.0", port=8000)
 # ...
-mcp.run(transport="streamable-http")   # 注意是连字符；默认监听 http://localhost:8000/mcp
+mcp.run(transport="streamable-http")   # 注意是连字符；端点为 http://<host>:8000/mcp
 ```
 
 ### 3.2 TypeScript（@modelcontextprotocol/sdk）
@@ -243,6 +270,8 @@ mcp.run(transport="streamable-http")   # 注意是连字符；默认监听 http:
 npm init -y
 npm install @modelcontextprotocol/sdk zod@3
 npm install -D @types/node typescript
+# 仅 Streamable HTTP 版需要（strict TypeScript 下 @types/express 为编译必需）：
+npm install express && npm install -D @types/express
 ```
 
 `package.json` 需加 `"type": "module"`，构建脚本示例 `"build": "tsc && chmod 755 build/index.js"`。`tsconfig.json` 关键项：`"target": "ES2022", "module": "Node16", "moduleResolution": "Node16", "outDir": "./build", "rootDir": "./src", "strict": true`。
@@ -313,11 +342,110 @@ main().catch((error) => {
 });
 ```
 
+**可选：资源与提示词**（v1 SDK 的签名与返回形状，需要时加进上面的模板）：
+
+```typescript
+import { ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
+
+// 资源（固定 URI；回调收到 URL 对象，用 uri.href）
+server.registerResource(
+  "config",
+  "config://app",
+  { title: "应用配置", mimeType: "text/plain" },
+  async (uri) => ({
+    contents: [{ uri: uri.href, text: "这里是配置内容" }],
+  }),
+);
+
+// 资源模板（URI 参数自动传入回调；列于 resources/templates/list）
+server.registerResource(
+  "user-profile",
+  new ResourceTemplate("users://{userId}/profile", { list: undefined }),
+  { title: "用户资料", mimeType: "application/json" },
+  async (uri, { userId }) => ({
+    contents: [{ uri: uri.href, text: JSON.stringify({ userId }) }],
+  }),
+);
+
+// 提示词模板（argsSchema 同样是 zod 字段对象，不要包 z.object()）
+server.registerPrompt(
+  "review_code",
+  {
+    title: "代码评审",
+    description: "生成代码评审提示词",
+    argsSchema: { code: z.string() },
+  },
+  ({ code }) => ({
+    messages: [
+      { role: "user", content: { type: "text", text: `请评审这段代码并指出问题：\n\n${code}` } },
+    ],
+  }),
+);
+```
+
 要点：
 
 - 导入路径必须带 **`.js` 后缀**（ESM 子路径导入）。
 - 用 `registerTool` / `registerResource` / `registerPrompt`；旧的 `server.tool()` 等已标记 deprecated。
-- **Streamable HTTP 版**：用 `createMcpExpressApp()`（来自 `@modelcontextprotocol/sdk/server/express.js`，自带 DNS-rebinding 防护）+ `StreamableHTTPServerTransport`（来自 `.../server/streamableHttp.js`）。无状态模式在每个 `app.post('/mcp', ...)` 请求内新建 server + transport（`sessionIdGenerator: undefined`），`await server.connect(transport); await transport.handleRequest(req, res, req.body)`，并在 `res.on('close')` 时清理。
+
+**Streamable HTTP 版**（无状态，生产部署推荐）——把 stdio 的 `main()` 换成 Express 应用，每个 POST 请求内新建 server + transport：
+
+```typescript
+import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+
+// 把上面的 McpServer 创建 + registerTool 注册逻辑包进一个工厂函数
+const getServer = () => { /* ... new McpServer(...) + register...；返回 server */ };
+
+const app = createMcpExpressApp();
+
+// 简单静态 Bearer token 鉴权（对外部署必加，见第 6 节；本地开发可去掉）
+app.use("/mcp", (req, res, next) => {
+  if (req.headers.authorization !== `Bearer ${process.env.MCP_TOKEN}`) {
+    return res.status(401).end();
+  }
+  next();
+});
+
+app.post("/mcp", async (req, res) => {
+  const server = getServer();
+  try {
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined, // undefined = 无状态模式
+    });
+    await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
+    res.on("close", () => { transport.close(); server.close(); });
+  } catch (error) {
+    console.error("Error handling MCP request:", error);
+    if (!res.headersSent) {
+      res.status(500).json({
+        jsonrpc: "2.0",
+        error: { code: -32603, message: "Internal server error" },
+        id: null,
+      });
+    }
+  }
+});
+
+// 无状态服务不提供 SSE/会话：规范要求不提供 SSE 的 GET 必须返回 405（Express 默认 404 不合规）
+for (const method of ["get", "delete"] as const) {
+  app[method]("/mcp", (_req, res) => {
+    res.status(405).json({
+      jsonrpc: "2.0",
+      error: { code: -32000, message: "Method not allowed." },
+      id: null,
+    });
+  });
+}
+
+app.listen(3000, () => console.log("MCP Server listening on /mcp, port 3000"));
+```
+
+注意事项：
+
+- 端点路径 `/mcp` 与端口 3000 沿用官方示例，可自行更改（宿主接入配置里的 URL 要一致）。HTTP 模式下 stdout 不是协议信道，日志可以用 `console.log`。
+- `createMcpExpressApp()` 的 DNS-rebinding 防护基于 Host 头校验，**默认 host 为 `127.0.0.1`（仅本地开发可用）**。远程部署需 `createMcpExpressApp({ host: "0.0.0.0" })`——此时自动防护关闭，必须自行加 `hostHeaderValidation(["你的域名"])` 中间件（来自 `@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js`）或在反向代理层校验 Host/Origin，并按第 6 节实现鉴权；否则远程客户端的请求会因 Host 头不是 127.0.0.1 而被 403 拒绝。
 
 ### 3.3 ⚠️ SDK 版本陷阱（LLM 生成代码最容易错的地方）
 
@@ -416,12 +544,18 @@ claude mcp remove my-plugin
       "command": "/usr/local/bin/python3",
       "args": ["/绝对路径/server.py"],
       "env": { "API_KEY": "xxx" }
+    },
+    "remote-plugin": {
+      "type": "http",
+      "url": "https://example.com/mcp"
     }
   }
 }
 ```
 
-三条铁律：**① 命令和路径必须用绝对路径**（Claude Desktop 以极简 PATH 启动，`python`/`npx` 这种短名经常找不到，报 `spawn xxx ENOENT`）；**② 改完配置必须完全退出重启**（macOS Cmd+Q，关窗口不算）；**③ 排错看日志**：macOS `~/Library/Logs/Claude/mcp.log`（连接日志）和 `mcp-server-<名字>.log`（你插件的 stderr），Windows 在 `%APPDATA%\Claude\logs\`。
+远程 HTTP 插件同样写入 `mcpServers`，只需 `type` 和 `url`（也可在 Claude Desktop 的 设置 → 连接器 中直接添加远程服务器）。Claude Desktop 仅提供 macOS / Windows 版本，Linux 用户请改用 Claude Code（见 5.1）。
+
+三条铁律：**① stdio 条目的命令和路径必须用绝对路径**（Claude Desktop 以极简 PATH 启动，`python`/`npx` 这种短名经常找不到，报 `spawn xxx ENOENT`）；**② 改完配置必须完全退出重启**（macOS Cmd+Q，关窗口不算）；**③ 排错看日志**：macOS `~/Library/Logs/Claude/mcp.log`（连接日志）和 `mcp-server-<名字>.log`（你插件的 stderr），Windows 在 `%APPDATA%\Claude\logs\`。
 
 ### 5.3 打包成 Claude Code 插件（可分发）
 
@@ -443,19 +577,24 @@ claude mcp remove my-plugin
 
 ### 5.4 Claude API / Managed Agents（程序化接入）
 
-- **Messages API（MCP connector，beta）**：仅支持远程 URL 型（Streamable HTTP）Server。请求带 beta 头 `mcp-client-2025-11-20`，且 `mcp_servers` 与 `tools` 必须成对出现：
+- **Messages API（MCP connector，beta）**：仅支持远程 URL 型 Server（Streamable HTTP 或 SSE 传输；SSE 已在 MCP 规范中弃用，新服务器应用 Streamable HTTP），**不支持本地 stdio Server**。`url` 必须是 Anthropic 服务器可从公网访问的地址（MCP 连接由 Anthropic 服务端发起），不能填 localhost/127.0.0.1——第 2.6/6 节的「只绑定 127.0.0.1」仅适用于本地开发，远程部署时服务需监听可达地址（如 0.0.0.0）并置于 HTTPS 之后。请求带 beta 头 `mcp-client-2025-11-20`，且 `mcp_servers` 与 `tools` 必须成对出现：
 
 ```python
 client.beta.messages.create(
     model="claude-opus-4-8", max_tokens=1024,
     betas=["mcp-client-2025-11-20"],
-    mcp_servers=[{"type": "url", "url": "https://example.com/mcp", "name": "my-plugin"}],
+    mcp_servers=[{
+        "type": "url", "url": "https://example.com/mcp", "name": "my-plugin",
+        "authorization_token": "<access token>",   # 可选：Server 要求鉴权时填
+    }],
     tools=[{"type": "mcp_toolset", "mcp_server_name": "my-plugin"}],
     messages=[...],
 )
 ```
 
-- **Managed Agents（beta）**：在 Agent 定义的 `mcp_servers` 里声明 `{type: "url", name, url}`（不含鉴权），OAuth/token 凭据存入 Vault，创建 Session 时用 `vault_ids` 挂载。托管 MCP 服务器（如 mcp.linear.app）通常要求 OAuth bearer token，而非该服务的原生 API key。
+  若你的 HTTP Server 要求鉴权，把访问令牌放进可选的 `authorization_token` 字段（connector 会将其作为 Bearer 凭据随请求发送）。OAuth 流程由 API 调用方自行完成——需在调用前获取 access token 并自行处理刷新。
+
+- **Managed Agents（beta）**：在 Agent 定义的 `mcp_servers` 里声明 `{type: "url", name, url}`（不含鉴权），OAuth/token 凭据存入 Vault，创建 Session 时用 `vault_ids` 挂载。与 Messages API 相同，Agent 的 `tools` 数组必须为每个声明的 MCP Server 加入对应的 `{"type": "mcp_toolset", "mcp_server_name": "<服务器名>"}` 条目。托管 MCP 服务器（如 mcp.linear.app）通常要求 OAuth bearer token，而非该服务的原生 API key。
 
 ### 5.5 其他 MCP 兼容宿主
 
@@ -468,8 +607,12 @@ client.beta.messages.create(
 1. **密钥管理**：密钥只通过环境变量或宿主配置的 `env` 传入，绝不硬编码进代码，绝不写入工具描述或返回内容，绝不打进日志。
 2. **输入校验**：所有工具入参必须校验（SDK 的 Schema 校验之外，业务规则也要查）。涉及文件路径的参数必须规范化后确认仍在允许目录内（防 `../` 穿越）；涉及 SQL 的必须参数化查询；涉及 shell 的避免拼接命令。
 3. **最小权限**：数据库用只读账号就不要给写权限；能限定 API scope 就限定。插件的权限就是模型的权限。
-4. **HTTP 服务**：本地开发只绑定 `127.0.0.1`；校验 `Origin` 头；对外服务必须鉴权（OAuth 2.1 / Bearer token）。
+4. **HTTP 服务**：本地开发只绑定 `127.0.0.1`；校验 `Origin` 头；对外服务必须鉴权，按场景分层：
+   - **内部/团队自用**：静态 Bearer token 校验即可——在中间件或网关比对 `Authorization` 头，不匹配返回 401，配合 HTTPS（TS 中间件示例见 3.2；Python 可用 Starlette 中间件包裹 `mcp.streamable_http_app()` 做同样检查）。校验必须发生在协议请求处理之前。规范层面鉴权本身是 OPTIONAL，静态 token 对内部部署合规且够用。
+   - **面向公网/多租户**：按规范实现 OAuth 2.1（MCP Server 作为资源服务器，含 RFC 9728 protected resource metadata）。不要手写完整 OAuth 流程——用 SDK 自带的 auth 支持（TypeScript：`@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js` 的 `requireBearerAuth`；Python：SDK 文档的 token verification）或托管网关。
+   - **客户端侧**：Claude Code 用 `--header "Authorization: Bearer ..."` 或 `.mcp.json` 的 `headers` 字段传静态 token（见 5.1）；Claude API 用 `authorization_token` 字段（见 5.4）。
 5. **破坏性操作**：在工具描述中明确标注（宿主如 Claude Code 会让用户确认），必要时插件内部再加确认参数或 dry-run 模式。
+6. **输出净化（规范 MUST）**：规范要求服务端净化工具输出。工具返回的内容会直接进入模型上下文——来自外部系统的数据（网页、工单、邮件、数据库记录、用户生成内容）可能夹带针对模型的注入指令（间接提示词注入）。插件应只返回任务所需的字段而非原始全文，必要时标注数据来源（如「以下为外部工单原文，仅作数据参考」）；不要把数据中出现的「指令」当作要执行的内容转述给模型。宿主侧的人工确认是最后一道防线，不能替代服务端过滤。
 
 ---
 
@@ -477,7 +620,7 @@ client.beta.messages.create(
 
 ### 7.1 第一站：MCP Inspector（官方可视化调试器）
 
-不接宿主、直接测插件（需 Node.js ≥ 22.7.5）：
+不接宿主、直接测插件（官方要求 Node.js `^22.7.5`，即 22.7.5 及以上的 22.x；更高大版本是否支持以 Inspector README 为准）：
 
 ```bash
 # stdio 插件
@@ -521,6 +664,7 @@ npx @modelcontextprotocol/inspector --cli python server.py \
 | 读文件失败/相对路径错乱 | 宿主启动子进程的工作目录不确定（可能是 `/`） | 代码和配置里一律绝对路径 |
 | 改了 `.mcp.json` 不生效 | 只在会话启动时读取 | 重启 Claude Code 会话 / 完全退出重启 Claude Desktop |
 | Windows 下 npx 起不来 | cmd.exe 不按 bash 方式搜 PATH | 用 `cmd /c npx ...` 或绝对路径 |
+| HTTP 插件连不上 | URL 错 / 未鉴权 / 服务未启动 / Host、Origin 校验拒绝 | 先 `curl -I https://.../mcp` 看状态码：404=路径错，401/403=鉴权或 Host/Origin 校验，超时=网络或服务未启动。注意 HTTP 模式下宿主**不会**捕获你的 stderr——日志应落在服务端自己的日志系统，或通过 `notifications/message` 发给客户端（stdout 在 HTTP 模式可自由使用，2.3 的铁律仅限 stdio） |
 
 ---
 
@@ -528,9 +672,9 @@ npx @modelcontextprotocol/inspector --cli python server.py \
 
 **协议合规**
 
-- [ ] 用官方 SDK 稳定版（Python `mcp>=1.27,<2` + `FastMCP`；TS `@modelcontextprotocol/sdk` 1.x + `registerTool`），或手写实现完整覆盖 2.1/2.2 的握手与方法
+- [ ] 用官方 SDK 稳定版（Python `mcp[cli]>=1.27,<2` + `FastMCP`；TS `@modelcontextprotocol/sdk` 1.x + `registerTool`），或手写实现完整覆盖 2.1/2.2 的握手与方法
 - [ ] stdio 模式下代码（含依赖）没有任何 stdout 输出，日志全部走 stderr
-- [ ] 每个工具：`name` 合法（`[A-Za-z0-9_.-]{1,128}`）、`inputSchema` 为合法 JSON Schema 对象、`description` 写明何时调用
+- [ ] 每个工具：`name` 符合命名指南（`[A-Za-z0-9_.-]{1,128}`，Server 内唯一）、`inputSchema` 为合法 JSON Schema 对象、`description` 写明何时调用
 - [ ] 业务/入参错误返回 `isError: true` + 可操作的错误文本，而不是抛协议错误或让进程崩溃
 - [ ] 声明了 `outputSchema` 的工具，`structuredContent` 符合 Schema，且同一 JSON 也放进了 text 内容块
 
@@ -538,14 +682,15 @@ npx @modelcontextprotocol/inspector --cli python server.py \
 
 - [ ] 交付了完整文件清单：源代码、依赖声明（`pyproject.toml`/`requirements.txt` 或 `package.json`+`tsconfig.json`）、README（含运行与接入步骤）
 - [ ] 密钥全部走环境变量，代码中无硬编码
-- [ ] 文件路径/SQL/命令注入风险已按第 6 节处理
+- [ ] 文件路径/SQL/命令注入风险已按第 6 节处理，工具返回内容已做净化/裁剪（第 6 节第 6 条）
+- [ ] 远程 HTTP 部署：`/mcp` 端点已实现鉴权（至少静态 Bearer token 校验，第 6 节第 4 条）
 - [ ] 提供了目标宿主的接入配置片段（5.1~5.4 对应格式），路径为绝对路径或使用 `${CLAUDE_PROJECT_DIR}` 等变量
 
 **可验证性**
 
 - [ ] 提供了 Inspector 测试命令，且 `tools/list`、`tools/call` 正反用例均可通过
-- [ ] 无参数工具的 `inputSchema` 是 `{"type": "object", "additionalProperties": false}`
-- [ ] TS 版：导入带 `.js` 后缀、`package.json` 有 `"type": "module"`、inputSchema 用字段对象而非 `z.object()`
+- [ ] 无参数工具的 `inputSchema` 为合法的对象型 Schema：手写实现推荐 `{"type": "object", "additionalProperties": false}`；SDK 自动生成的 Schema（如 `{"type": "object", "properties": {}}`）直接视为合规，不要手动修改
+- [ ] TS 版：导入带 `.js` 后缀、`package.json` 有 `"type": "module"`、inputSchema/argsSchema 用字段对象而非 `z.object()`、资源回调返回 `{contents: [...]}`、提示词回调返回 `{messages: [...]}`
 - [ ] Python 版：装饰器带括号、传输字符串为 `"stdio"` / `"streamable-http"`
 
 ---
@@ -558,7 +703,7 @@ npx @modelcontextprotocol/inspector --cli python server.py \
 【插件名称】my-plugin
 【一句话功能】查询公司内部订单系统的订单状态和物流信息
 【实现语言】Python / TypeScript（二选一；不确定就选 Python）
-【运行方式】本地 stdio（默认）/ 远程 HTTP
+【运行方式】本地 stdio（默认）/ 远程 HTTP（目标宿主含 Claude API 时必选远程 HTTP）
 【目标宿主】Claude Code / Claude Desktop / Claude API / 其他：____
 【工具清单】
   1. query_order —— 按订单号查订单状态；参数：order_id（字符串，必填）
@@ -585,10 +730,15 @@ npx @modelcontextprotocol/inspector --cli python server.py \
    c. 安装与运行命令
    d. 针对我的目标宿主的接入配置（文档第 5 节对应格式）
    e. MCP Inspector 测试命令与 2~3 个测试用例（含一个错误输入用例）
+   f. README（含运行与接入步骤）
 5. 最后对照文档第 8 节验收清单逐项自检，输出核对结果；
    任何一项不满足，先修正代码再交付。
 6. 需求中含糊之处，选择最简单的合理默认值并在交付说明中标注，
    不要展开询问。
+7. 约束：若【目标宿主】包含 Claude API（MCP connector 仅支持远程
+   URL 型 Server，见 5.4），则【运行方式】必须为远程 HTTP。两项
+   冲突时以【目标宿主】为准：改用 Streamable HTTP 生成，并在交付
+   说明中标注该调整。
 ```
 
 ---
@@ -598,12 +748,12 @@ npx @modelcontextprotocol/inspector --cli python server.py \
 一个最小合规 stdio Server 只需处理 5 种消息（全部单行 JSON 写 stdout）：
 
 1. `initialize`（请求）→ 返回 `{protocolVersion, capabilities: {"tools": {}}, serverInfo: {name, version}}`。若客户端请求的版本不认识，返回你支持的版本（如 `"2025-11-25"`）。
-2. `notifications/initialized`（通知）→ 无需响应。
+2. `notifications/initialized`（通知）→ 无需响应；其他通知（无 id）同样静默忽略，不要回复。
 3. `tools/list`（请求）→ 返回 `{tools: [...]}`（工具定义格式见 2.4）。
 4. `tools/call`（请求）→ 执行并返回 CallToolResult；未知工具名返回 JSON-RPC error `-32602`。
 5. `ping`（请求）→ 返回 `{}`。
 
-其余方法可返回 `-32601`（Method not found）。收到无法解析的行返回 `-32700`。
+其余**带 `id` 的请求**可返回 `-32601`（Method not found）。凡是**通知**（无 `id`，method 一般以 `notifications/` 开头，如 `notifications/cancelled`、`notifications/roots/list_changed`、`notifications/progress`）**一律不得返回任何响应，静默忽略**——JSON-RPC 禁止对通知作出应答，且 MCP 禁止响应的 `id` 为 null，因此不存在合法的错误回复方式。收到无法解析的行时，由于无法确定 `id`，建议记录到 stderr 后丢弃该行（若按 JSON-RPC 惯例回 `-32700`，注意 MCP 对 id 的限制）。
 
 ## 附录 B：信息来源
 
