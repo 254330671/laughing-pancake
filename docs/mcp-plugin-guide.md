@@ -159,7 +159,7 @@ stdio 模式下宿主把你的插件作为子进程启动，stdin/stdout 就是�
 | 适用场景 | 个人/团队本地插件、访问本机资源 | 对外提供服务、云端部署、需要集中鉴权 |
 | 关键要求 | 见 2.3 | 单一端点（如 `/mcp`）同时支持 POST（必须）和 GET（可选 SSE）；客户端会带 `MCP-Protocol-Version` 和（若启用会话）`MCP-Session-Id` 头；**必须校验 `Origin` 头**（防 DNS rebinding，非法 Origin 返回 403）；本机服务只绑定 `127.0.0.1`；生产环境应实现鉴权（规范采用 OAuth 2.1，MCP Server 作为资源服务器；分层实现方案见第 6 节第 4 条） |
 
-> 旧版「HTTP+SSE 双端点」传输（2024-11-05 时代）已废弃，新插件不要实现它。stdio 插件不需要实现 OAuth——密钥通过环境变量传入即可。
+> 旧版「HTTP+SSE 双端点」传输（2024-11-05 时代）已废弃，新插件不要实现它。stdio 插件不需要实现 OAuth——密钥通过环境变量传入即可。插件后端跑在哪里（本机 / 自有电脑当服务器 / 云服务器）的部署梳理见 5.6。
 
 ---
 
@@ -577,7 +577,7 @@ claude mcp remove my-plugin
 
 ### 5.4 Claude API / Managed Agents（程序化接入）
 
-- **Messages API（MCP connector，beta）**：仅支持远程 URL 型 Server（Streamable HTTP 或 SSE 传输；SSE 已在 MCP 规范中弃用，新服务器应用 Streamable HTTP），**不支持本地 stdio Server**。`url` 必须是 Anthropic 服务器可从公网访问的地址（MCP 连接由 Anthropic 服务端发起），不能填 localhost/127.0.0.1——第 2.6/6 节的「只绑定 127.0.0.1」仅适用于本地开发，远程部署时服务需监听可达地址（如 0.0.0.0）并置于 HTTPS 之后。请求带 beta 头 `mcp-client-2025-11-20`，且 `mcp_servers` 与 `tools` 必须成对出现：
+- **Messages API（MCP connector，beta）**：仅支持远程 URL 型 Server（Streamable HTTP 或 SSE 传输；SSE 已在 MCP 规范中弃用，新服务器应用 Streamable HTTP），**不支持本地 stdio Server**。`url` 必须是 Anthropic 服务器可从公网访问的地址（MCP 连接由 Anthropic 服务端发起），不能填 localhost/127.0.0.1——第 2.6/6 节的「只绑定 127.0.0.1」仅适用于本地开发，远程部署时服务需监听可达地址（如 0.0.0.0）并置于 HTTPS 之后（完整部署步骤见 5.6 形态 C）。请求带 beta 头 `mcp-client-2025-11-20`，且 `mcp_servers` 与 `tools` 必须成对出现：
 
 ```python
 client.beta.messages.create(
@@ -599,6 +599,70 @@ client.beta.messages.create(
 ### 5.5 其他 MCP 兼容宿主
 
 任何实现了 MCP 客户端的应用（Cursor、Windsurf、自研 Host 等）都能接入你的插件——stdio 插件给出「启动命令 + 参数 + 环境变量」，HTTP 插件给出 URL 即可。这正是 MCP 的价值：**一次实现，处处接入**。
+
+### 5.6 后端部署梳理：插件跑在哪里
+
+三种形态按需选择，**多数个人场景选形态 A 即可，根本不需要"服务器"**：
+
+| | **A：本机 stdio（默认）** | **B：自己电脑当 HTTP 服务器** | **C：云服务器（如阿里云 ECS）** |
+|---|---|---|---|
+| 运行方式 | 宿主按需拉起子进程，用完自动管理 | 电脑上常驻一个 HTTP 服务 | 云主机上常驻 HTTP 服务 |
+| 适用 | 个人使用、访问本机文件/内网资源 | 局域网内多设备共享、临时给外部演示 | 团队共享、接 Claude API connector、7×24 正式服务 |
+| 成本 | 零 | 电费 + 电脑常开 | 云主机（MCP 服务很轻，最低配即可）|
+| 前置要求 | 无 | 常开机；出公网需内网穿透 | 会基本的 Linux 运维（本节给出最小清单）|
+| 支持宿主 | Claude Code / Desktop 等本地宿主 | 本地宿主 +（穿透后）Claude API | 全部 |
+
+**形态 A：本机 stdio——不需要部署**
+
+这是最容易被误解的一点：stdio 插件**没有端口、没有常驻进程、不需要"启动服务器"**。宿主（Claude Code / Claude Desktop）在需要时把你的脚本作为子进程拉起，会话结束自动回收。你的电脑既是开发机也是运行环境，配置好 5.1/5.2 的启动命令就完成了"部署"。只有当插件需要被**本机之外**的客户端访问时，才需要考虑 B 或 C。
+
+**形态 B：自己的电脑当 HTTP 服务器**
+
+1. **局域网共享**：按 3.1/3.2 的 Streamable HTTP 版启动，绑定 `0.0.0.0`（必须同时加 Bearer token 鉴权，见第 6 节第 4 条），局域网内其他设备用 `http://<内网IP>:8000/mcp` 接入。
+2. **暴露到公网**（家庭宽带通常没有公网 IP）：用内网穿透——Cloudflare Tunnel（`cloudflared`，自带 HTTPS 域名，最省事）、frp（自建，需一台有公网 IP 的中转机，国内网络环境下更稳）或 ngrok 等。接 Claude API connector 时必须公网可达 + HTTPS（见 5.4），tunnel 类工具的自动 HTTPS 域名正好满足。
+3. **保活**：macOS 用 `launchd`、Linux 用 `systemd --user`、或跨平台用 `pm2` 让服务开机自启、崩溃自动重启；同时在系统设置里关闭休眠。
+4. **务必想清风险**：家用电脑常年暴露公网，安全面大、IP 不稳、断电断网即服务中断。**仅适合个人实验和临时共享，不适合正式用途**——正式场景直接上形态 C。
+
+**形态 C：云服务器上线（以阿里云 ECS / Linux 为例，其他云同理）**
+
+最小部署清单，从零到可用：
+
+1. **选机器**：MCP 服务极轻量，1核1G~2核2G 足够（轻量应用服务器/按量付费均可）。系统选主流 Linux（如 Ubuntu 22.04+）。
+2. **装环境、跑通服务**：装 Python 3.10+ 或 Node 18+，上传代码、装依赖，先手动启动确认 `curl -I http://127.0.0.1:8000/mcp` 有响应。**应用只监听 `127.0.0.1`，不要直接对公网监听端口**——对外由反向代理承接。
+3. **反向代理 + HTTPS**：推荐 Caddy（自动申请和续期 Let's Encrypt 证书，两行配置）：
+
+   ```
+   # /etc/caddy/Caddyfile
+   your-domain.com {
+       reverse_proxy /mcp* 127.0.0.1:8000
+   }
+   ```
+
+   用 Nginx 则注意：若启用了 SSE 流式响应（非 `json_response=True` 的模式），需要 `proxy_buffering off;` 并调大 `proxy_read_timeout`，否则流会被缓冲或掐断；无状态 JSON 模式（3.1 推荐配置）无此顾虑。
+4. **常驻运行**：用 systemd 托管，密钥放 `EnvironmentFile`，不进代码库：
+
+   ```ini
+   # /etc/systemd/system/my-plugin.service
+   [Unit]
+   Description=My MCP Plugin
+   After=network.target
+
+   [Service]
+   WorkingDirectory=/opt/my-plugin
+   EnvironmentFile=/etc/my-plugin/env      # 内容形如 ORDER_API_TOKEN=xxx
+   ExecStart=/opt/my-plugin/.venv/bin/python server.py
+   Restart=always
+   User=mcp                                 # 专用低权限用户，勿用 root
+
+   [Install]
+   WantedBy=multi-user.target
+   ```
+
+   `systemctl enable --now my-plugin` 启用并开机自启。
+5. **网络与域名**：云控制台安全组**只放行 80/443**（8000 端口不对公网开放）；域名解析到服务器 IP。**国内地域的服务器用域名对外提供 80/443 服务需完成 ICP 备案**（阿里云会拦截未备案域名）；不想备案可选用中国香港/新加坡等地域，或仅在备案完成前用 IP+自签证书做内部测试。
+6. **接入验证**：Claude Code 端 `claude mcp add --transport http my-plugin https://your-domain.com/mcp --header "Authorization: Bearer <token>"`；Claude API 端按 5.4 填 `authorization_token`。上线前按 7.3 的 HTTP 排查行自测一遍（`curl -I`、401/403/404 各状态确认符合预期）。
+
+**进阶**：文档推荐的无状态配置（Python `stateless_http=True, json_response=True`；TS `sessionIdGenerator: undefined`）不依赖实例内存中的会话，天然适配容器化和 Serverless（如阿里云函数计算 FC / SAE）以及多实例负载均衡；**有状态（会话/SSE）模式则要求同一会话的请求落到同一实例**（需粘性会话），个人和小团队没必要碰。无论哪种部署，第 6 节的安全要求（鉴权、Host/Origin 校验、最小权限、密钥管理）全部适用。
 
 ---
 
@@ -704,6 +768,8 @@ npx @modelcontextprotocol/inspector --cli python server.py \
 【一句话功能】查询公司内部订单系统的订单状态和物流信息
 【实现语言】Python / TypeScript（二选一；不确定就选 Python）
 【运行方式】本地 stdio（默认）/ 远程 HTTP（目标宿主含 Claude API 时必选远程 HTTP）
+【部署位置】（仅远程 HTTP 需填）自己的电脑（内网穿透）/ 云服务器（如阿里云 ECS）
+  —— 部署形态说明见文档 5.6；选云服务器时请一并输出 5.6 形态 C 的部署配置
 【目标宿主】Claude Code / Claude Desktop / Claude API / 其他：____
 【工具清单】
   1. query_order —— 按订单号查订单状态；参数：order_id（字符串，必填）
